@@ -1,4 +1,7 @@
-use crate::{access, config, file_chooser, screencast_dialog, screenshot, subscription};
+use crate::{
+    access, config, file_chooser, remote_desktop_dialog, screencast_dialog, screenshot,
+    subscription,
+};
 use cosmic::iced::core::event::wayland::OutputEvent;
 use cosmic::iced::platform_specific::shell::commands::layer_surface::get_layer_surface;
 use cosmic::iced::runtime::platform_specific::wayland::layer_surface::{
@@ -8,7 +11,8 @@ use cosmic::iced::{Event, Length, Limits, Subscription, event, window};
 use cosmic::{Task, app, cosmic_config, widget};
 use cosmic_client_toolkit::sctk::shell::wlr_layer;
 use std::collections::HashMap;
-use wayland_client::{Connection, Proxy, protocol::wl_output::WlOutput};
+use wayland_client::protocol::wl_output::WlOutput;
+use wayland_client::{Connection, Proxy};
 
 pub(crate) fn run() -> cosmic::iced::Result {
     let settings = cosmic::app::Settings::default()
@@ -38,6 +42,7 @@ pub struct CosmicPortal {
     pub screencast_args: Option<screencast_dialog::Args>,
     pub screencast_tab_model:
         widget::segmented_button::Model<widget::segmented_button::SingleSelect>,
+    pub remote_desktop_args: Option<remote_desktop_dialog::Args>,
     pub location_options: Vec<String>,
     pub prev_rectangle: Option<screenshot::Rect>,
     pub wayland_helper: Option<crate::wayland::WaylandHelper>,
@@ -64,11 +69,14 @@ pub enum Msg {
     FileChooser(window::Id, file_chooser::Msg),
     Screenshot(screenshot::Msg),
     Screencast(screencast_dialog::Msg),
+    RemoteDesktop(remote_desktop_dialog::Msg),
     Portal(subscription::Event),
     Output(OutputEvent, WlOutput),
     ConfigSetScreenshot(config::screenshot::Screenshot),
     /// Update config from external changes
     ConfigSubUpdate(config::Config),
+    /// A layer surface was closed by the compositor (e.g. output disconnected)
+    LayerClosed(window::Id),
 }
 
 #[derive(Clone, Debug)]
@@ -113,6 +121,7 @@ impl cosmic::Application for CosmicPortal {
                 screenshot_args: Default::default(),
                 screencast_args: Default::default(),
                 screencast_tab_model: Default::default(),
+                remote_desktop_args: Default::default(),
                 location_options: Vec::new(),
                 prev_rectangle: Default::default(),
                 outputs: Default::default(),
@@ -124,10 +133,10 @@ impl cosmic::Application for CosmicPortal {
             get_layer_surface(SctkLayerSurfaceSettings {
                 id: dummy_id,
                 layer: wlr_layer::Layer::Bottom,
-                keyboard_interactivity: wlr_layer::KeyboardInteractivity::None,
+                keyboard_interactivity: wlr_layer::KeyboardInteractivity::OnDemand,
                 input_zone: Some(Vec::new()),
                 anchor: wlr_layer::Anchor::empty(),
-                output: cosmic::iced::runtime::platform_specific::wayland::layer_surface::IcedOutput::Active,
+                output: cosmic::iced::runtime::platform_specific::wayland::layer_surface::IcedOutput::All,
                 namespace: "cosmic_portal_dummy".into(),
                 margin: IcedMargin::default(),
                 size: Some((Some(6), Some(6))),
@@ -146,6 +155,8 @@ impl cosmic::Application for CosmicPortal {
             access::view(self).map(Msg::Access)
         } else if id == *screencast_dialog::SCREENCAST_ID {
             screencast_dialog::view(self).map(Msg::Screencast)
+        } else if id == *remote_desktop_dialog::REMOTE_DESKTOP_ID {
+            remote_desktop_dialog::view(self).map(Msg::RemoteDesktop)
         } else if self.outputs.iter().any(|o| o.id == id) {
             screenshot::view(self, id).map(Msg::Screenshot)
         } else if self.dummy_id == id {
@@ -170,6 +181,12 @@ impl cosmic::Application for CosmicPortal {
                 subscription::Event::CancelScreencast(handle) => {
                     screencast_dialog::cancel(self, handle)
                 }
+                subscription::Event::RemoteDesktop(args) => {
+                    remote_desktop_dialog::update_args(self, args).map(cosmic::Action::App)
+                }
+                subscription::Event::CancelRemoteDesktop(handle) => {
+                    remote_desktop_dialog::cancel(self, handle).map(cosmic::Action::App)
+                }
                 subscription::Event::Config(config) => self.update(Msg::ConfigSubUpdate(config)),
                 subscription::Event::Accent(_)
                 | subscription::Event::IsDark(_)
@@ -185,6 +202,9 @@ impl cosmic::Application for CosmicPortal {
             },
             Msg::Screenshot(m) => screenshot::update_msg(self, m),
             Msg::Screencast(m) => screencast_dialog::update_msg(self, m),
+            Msg::RemoteDesktop(m) => {
+                remote_desktop_dialog::update_msg(self, m).map(cosmic::Action::App)
+            }
             Msg::Output(o_event, wl_output) => {
                 if self.wayland_helper.is_none()
                     && let Some(backend) = wl_output.backend().upgrade()
@@ -280,6 +300,27 @@ impl cosmic::Application for CosmicPortal {
                 self.config = config;
                 cosmic::iced::Task::none()
             }
+            Msg::LayerClosed(id) if id == self.dummy_id => {
+                // The clipboard-owning dummy surface was closed by the compositor
+                // (e.g. an output was disconnected). Re-create it so the portal
+                // always retains a focusable surface to own the clipboard selection.
+                tracing::warn!("Dummy layer surface was closed by compositor, re-creating it");
+                self.dummy_id = window::Id::unique();
+                get_layer_surface(SctkLayerSurfaceSettings {
+                    id: self.dummy_id,
+                    layer: wlr_layer::Layer::Bottom,
+                    keyboard_interactivity: wlr_layer::KeyboardInteractivity::OnDemand,
+                    input_zone: Some(Vec::new()),
+                    anchor: wlr_layer::Anchor::empty(),
+                    output: cosmic::iced::runtime::platform_specific::wayland::layer_surface::IcedOutput::All,
+                    namespace: "cosmic_portal_dummy".into(),
+                    margin: IcedMargin::default(),
+                    size: Some((Some(6), Some(6))),
+                    exclusive_zone: -1,
+                    size_limits: Limits::NONE,
+                })
+            }
+            Msg::LayerClosed(_) => cosmic::iced::Task::none(),
         }
     }
 
@@ -289,6 +330,9 @@ impl cosmic::Application for CosmicPortal {
             Event::PlatformSpecific(event::PlatformSpecific::Wayland(w_e)) => match w_e {
                 event::wayland::Event::Output(o_event, wl_output) => {
                     Some(Msg::Output(o_event, wl_output))
+                }
+                event::wayland::Event::Layer(event::wayland::LayerEvent::Done, _surface, id) => {
+                    Some(Msg::LayerClosed(id))
                 }
                 _ => None,
             },
