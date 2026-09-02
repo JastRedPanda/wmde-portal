@@ -80,10 +80,5 @@ package() {
     | install -Dm644 /dev/stdin \
       "$pkgdir/usr/lib/systemd/user/org.freedesktop.impl.portal.desktop.wmde.service"
 
-  # App-bundled screenshot-mode icons (the Screenshot UI looks them up by name).
-  find data/icons -type f | while read -r f; do
-    install -Dm644 "$f" "$pkgdir/usr/share/icons/hicolor/${f#data/icons/}"
-  done
-
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
