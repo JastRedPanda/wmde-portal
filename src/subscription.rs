@@ -1,6 +1,5 @@
 // contains the subscription which sends portal events and response channels to iced.
 
-use std::any::TypeId;
 use std::hash::Hash;
 
 use cosmic::cosmic_theme::palette::Srgba;
@@ -16,14 +15,13 @@ use crate::screencast::ScreenCast;
 use crate::screenshot::Screenshot;
 use crate::{
     ACCENT_COLOR_KEY, APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, CONTRAST_KEY, ColorScheme, Contrast,
-    DBUS_NAME, DBUS_PATH, Settings, config, wayland,
+    DBUS_NAME, DBUS_PATH, Settings, wayland,
 };
 
 #[derive(Clone, Debug)]
 pub enum Event {
     Access(crate::access::AccessDialogArgs),
     FileChooser(crate::file_chooser::Args),
-    Screenshot(crate::screenshot::Args),
     Screencast(crate::screencast_dialog::Args),
     CancelScreencast(zvariant::ObjectPath<'static>),
     RemoteDesktop(crate::remote_desktop_dialog::Args),
@@ -31,7 +29,6 @@ pub enum Event {
     Accent(Srgba),
     IsDark(bool),
     HighContrast(bool),
-    Config(config::Config),
     Init(tokio::sync::mpsc::Sender<Event>),
     NameLost,
 }
@@ -44,7 +41,6 @@ pub enum State {
 pub(crate) fn portal_subscription(
     helper: wayland::WaylandHelper,
 ) -> cosmic::iced::Subscription<Event> {
-    struct ConfigSubscription;
     struct Wrapper {
         helper: wayland::WaylandHelper,
     }
@@ -65,18 +61,6 @@ pub(crate) fn portal_subscription(
                     }
                 }
             })
-        }),
-        cosmic_config::config_subscription(
-            TypeId::of::<ConfigSubscription>(),
-            config::APP_ID.into(),
-            config::CONFIG_VERSION,
-        )
-        .map(|update| {
-            for error in update.errors {
-                tracing::warn!("Error updating config: {:?}", error);
-            }
-
-            Event::Config(update.config)
         }),
     ])
 }
@@ -99,7 +83,7 @@ pub(crate) async fn process_changes(
                 )?
                 .serve_at(
                     DBUS_PATH,
-                    Screenshot::new(wayland_helper.clone(), tx.clone()),
+                    Screenshot,
                 )?
                 .serve_at(
                     DBUS_PATH,
@@ -132,11 +116,6 @@ pub(crate) async fn process_changes(
                     Event::FileChooser(args) => {
                         if let Err(err) = output.send(Event::FileChooser(args)).await {
                             tracing::error!("Error sending access event: {:?}", err);
-                        };
-                    }
-                    Event::Screenshot(args) => {
-                        if let Err(err) = output.send(Event::Screenshot(args)).await {
-                            tracing::error!("Error sending screenshot event: {:?}", err);
                         };
                     }
                     Event::Screencast(args) => {
@@ -213,11 +192,6 @@ pub(crate) async fn process_changes(
                                 zvariant::Value::from(iface.contrast as u32),
                             )
                             .await?;
-                    }
-                    Event::Config(config) => {
-                        if let Err(err) = output.send(Event::Config(config)).await {
-                            tracing::error!("Error sending config update: {:?}", err)
-                        }
                     }
                     Event::Init(_) => {}
                     Event::NameLost => {}

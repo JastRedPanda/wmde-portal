@@ -8,7 +8,6 @@ use tracing_subscriber::{EnvFilter, fmt};
 use zbus::object_server::{InterfaceRef, SignalEmitter};
 use zbus::zvariant::{self, OwnedValue};
 
-pub use cosmic_portal_config as config;
 
 mod access;
 mod app;

@@ -18,7 +18,6 @@ use cosmic_client_toolkit::workspace::WorkspaceState;
 use async_io::Timer;
 use futures::channel::oneshot;
 use futures::future::{Either, select};
-use futures::stream::{FuturesOrdered, Stream, StreamExt};
 use std::collections::HashMap;
 use std::future::Future;
 use std::os::fd::{AsFd, OwnedFd};
@@ -473,34 +472,6 @@ impl WaylandHelper {
                 output_infos.remove(output);
             }
         }
-    }
-
-    pub fn capture_output_toplevels_shm<'a>(
-        &'a self,
-        output: &wl_output::WlOutput,
-        overlay_cursor: bool,
-    ) -> impl Stream<Item = ShmImage<OwnedFd>> + 'a {
-        // get the active workspace for this output
-        // get the toplevels for that workspace
-        // capture each toplevel
-
-        let toplevels = self
-            .inner
-            .output_toplevels
-            .lock()
-            .unwrap()
-            .get(output)
-            .cloned()
-            .unwrap_or_default();
-
-        toplevels
-            .into_iter()
-            .map(|foreign_toplevel| {
-                let source = CaptureSource::Toplevel(foreign_toplevel.clone());
-                self.capture_source_shm(source, overlay_cursor)
-            })
-            .collect::<FuturesOrdered<_>>()
-            .filter_map(|x| async { x })
     }
 
     pub fn capture_source_session(&self, source: CaptureSource, overlay_cursor: bool) -> Session {

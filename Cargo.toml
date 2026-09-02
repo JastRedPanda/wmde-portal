@@ -9,9 +9,6 @@ default = ["systemd"]
 wgpu = ["libcosmic/wgpu"]
 systemd = ["dep:tracing-journald"]
 
-[workspace]
-members = ["cosmic-portal-config"]
-
 [dependencies]
 anyhow = "1.0.102"
 ashpd = "0.12"
@@ -29,7 +26,6 @@ image = "0.25"
 # id); alias it back to the `cosmic-bg-config` key so `cosmic_bg_config::` imports keep
 # resolving, and so the portal reads the same wallpaper state the wmde-bg daemon writes.
 cosmic-bg-config = { package = "wmde-bg-config", path = "../wmde-bg/config" }
-cosmic-portal-config = { path = "./cosmic-portal-config" }
 memmap2 = "0.9.10"
 # pipewire = { git = "https://github.com/pop-os/pipewire-rs" }
 pipewire = { git = "https://gitlab.freedesktop.org/pipewire/pipewire-rs", features = [

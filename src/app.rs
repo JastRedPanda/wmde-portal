@@ -1,5 +1,5 @@
 use crate::{
-    access, config, file_chooser, remote_desktop_dialog, screencast_dialog, screenshot,
+    access, file_chooser, remote_desktop_dialog, screencast_dialog,
     subscription,
 };
 use cosmic::iced::core::event::wayland::OutputEvent;
@@ -8,7 +8,7 @@ use cosmic::iced::runtime::platform_specific::wayland::layer_surface::{
     IcedMargin, SctkLayerSurfaceSettings,
 };
 use cosmic::iced::{Event, Length, Limits, Subscription, event, window};
-use cosmic::{Task, app, cosmic_config, widget};
+use cosmic::{Task, app, widget};
 use cosmic_client_toolkit::sctk::shell::wlr_layer;
 use std::collections::HashMap;
 use wayland_client::protocol::wl_output::WlOutput;
@@ -18,12 +18,7 @@ pub(crate) fn run() -> cosmic::iced::Result {
     let settings = cosmic::app::Settings::default()
         .no_main_window(true)
         .exit_on_close(false);
-    let (config, config_handler) = config::Config::load();
-    let flags = Flags {
-        config,
-        config_handler,
-    };
-    cosmic::app::run::<CosmicPortal>(settings, flags)
+    cosmic::app::run::<CosmicPortal>(settings, ())
 }
 
 // run iced app with no main surface
@@ -31,64 +26,36 @@ pub struct CosmicPortal {
     pub core: app::Core,
     pub tx: Option<tokio::sync::mpsc::Sender<subscription::Event>>,
 
-    pub config_handler: Option<cosmic_config::Config>,
-    pub config: config::Config,
-
     pub access_args: Option<access::AccessDialogArgs>,
 
     pub file_choosers: HashMap<window::Id, (file_chooser::Args, file_chooser::Dialog)>,
 
-    pub screenshot_args: Option<screenshot::Args>,
     pub screencast_args: Option<screencast_dialog::Args>,
     pub screencast_tab_model:
         widget::segmented_button::Model<widget::segmented_button::SingleSelect>,
     pub remote_desktop_args: Option<remote_desktop_dialog::Args>,
-    pub location_options: Vec<String>,
-    pub prev_rectangle: Option<screenshot::Rect>,
     pub wayland_helper: Option<crate::wayland::WaylandHelper>,
 
-    pub outputs: Vec<OutputState>,
-    pub active_output: Option<WlOutput>,
     pub dummy_id: window::Id,
 }
 
-#[derive(Debug, Clone)]
-pub struct OutputState {
-    pub output: WlOutput,
-    pub id: window::Id,
-    pub name: String,
-    pub logical_size: (u32, u32),
-    pub logical_pos: (i32, i32),
-    pub has_pointer: bool,
-    pub bg_source: Option<cosmic_bg_config::Source>,
-}
 
 #[derive(Debug, Clone)]
 pub enum Msg {
     Access(access::Msg),
     FileChooser(window::Id, file_chooser::Msg),
-    Screenshot(screenshot::Msg),
     Screencast(screencast_dialog::Msg),
     RemoteDesktop(remote_desktop_dialog::Msg),
     Portal(subscription::Event),
     Output(OutputEvent, WlOutput),
-    ConfigSetScreenshot(config::screenshot::Screenshot),
-    /// Update config from external changes
-    ConfigSubUpdate(config::Config),
     /// A layer surface was closed by the compositor (e.g. output disconnected)
     LayerClosed(window::Id),
-}
-
-#[derive(Clone, Debug)]
-pub struct Flags {
-    pub config_handler: Option<cosmic_config::Config>,
-    pub config: config::Config,
 }
 
 impl cosmic::Application for CosmicPortal {
     type Executor = cosmic::executor::Default;
 
-    type Flags = Flags;
+    type Flags = ();
 
     type Message = Msg;
 
@@ -104,28 +71,18 @@ impl cosmic::Application for CosmicPortal {
 
     fn init(
         mut core: app::Core,
-        Flags {
-            config_handler,
-            config,
-        }: Self::Flags,
+        _flags: (),
     ) -> (Self, cosmic::iced::Task<cosmic::Action<Self::Message>>) {
         core.set_app_type(cosmic::core::AppType::System);
         let dummy_id = window::Id::unique();
         (
             Self {
                 core,
-                config_handler,
-                config,
                 access_args: Default::default(),
                 file_choosers: Default::default(),
-                screenshot_args: Default::default(),
                 screencast_args: Default::default(),
                 screencast_tab_model: Default::default(),
                 remote_desktop_args: Default::default(),
-                location_options: Vec::new(),
-                prev_rectangle: Default::default(),
-                outputs: Default::default(),
-                active_output: Default::default(),
                 wayland_helper: None,
                 tx: None,
                 dummy_id,
@@ -157,8 +114,6 @@ impl cosmic::Application for CosmicPortal {
             screencast_dialog::view(self).map(Msg::Screencast)
         } else if id == *remote_desktop_dialog::REMOTE_DESKTOP_ID {
             remote_desktop_dialog::view(self).map(Msg::RemoteDesktop)
-        } else if self.outputs.iter().any(|o| o.id == id) {
-            screenshot::view(self, id).map(Msg::Screenshot)
         } else if self.dummy_id == id {
             widget::space::Space::new()
                 .width(Length::Fill)
@@ -176,7 +131,6 @@ impl cosmic::Application for CosmicPortal {
             Msg::Portal(e) => match e {
                 subscription::Event::Access(args) => access::update_args(self, args),
                 subscription::Event::FileChooser(args) => file_chooser::update_args(self, args),
-                subscription::Event::Screenshot(args) => screenshot::update_args(self, args),
                 subscription::Event::Screencast(args) => screencast_dialog::update_args(self, args),
                 subscription::Event::CancelScreencast(handle) => {
                     screencast_dialog::cancel(self, handle)
@@ -187,7 +141,6 @@ impl cosmic::Application for CosmicPortal {
                 subscription::Event::CancelRemoteDesktop(handle) => {
                     remote_desktop_dialog::cancel(self, handle).map(cosmic::Action::App)
                 }
-                subscription::Event::Config(config) => self.update(Msg::ConfigSubUpdate(config)),
                 subscription::Event::Accent(_)
                 | subscription::Event::IsDark(_)
                 | subscription::Event::HighContrast(_) => cosmic::iced::Task::none(),
@@ -200,12 +153,15 @@ impl cosmic::Application for CosmicPortal {
                     cosmic::iced::exit()
                 }
             },
-            Msg::Screenshot(m) => screenshot::update_msg(self, m),
             Msg::Screencast(m) => screencast_dialog::update_msg(self, m),
             Msg::RemoteDesktop(m) => {
                 remote_desktop_dialog::update_msg(self, m).map(cosmic::Action::App)
             }
-            Msg::Output(o_event, wl_output) => {
+            // Kept only for the connection: screencast and the access dialog reach for
+            // `wayland_helper`, and the first output event is where it comes from. The
+            // output geometry that used to be tracked here belonged to the screenshot
+            // overlay, which now lives in wmde-screenshot.
+            Msg::Output(_o_event, wl_output) => {
                 if self.wayland_helper.is_none()
                     && let Some(backend) = wl_output.backend().upgrade()
                 {
@@ -213,91 +169,6 @@ impl cosmic::Application for CosmicPortal {
                     self.wayland_helper = Some(crate::wayland::WaylandHelper::new(conn));
                 }
 
-                match o_event {
-                    OutputEvent::Created(Some(info))
-                        if info.name.is_some()
-                            && info.logical_size.is_some()
-                            && info.logical_position.is_some() =>
-                    {
-                        self.outputs.push(OutputState {
-                            output: wl_output,
-                            id: window::Id::unique(),
-                            name: info.name.unwrap(),
-                            logical_size: info
-                                .logical_size
-                                .map(|(w, h)| (w as u32, h as u32))
-                                .unwrap(),
-                            logical_pos: info.logical_position.unwrap(),
-                            has_pointer: false,
-                            bg_source: None,
-                        })
-                    }
-                    OutputEvent::Removed => self.outputs.retain(|o| o.output != wl_output),
-                    OutputEvent::InfoUpdate(info)
-                        if info.name.is_some()
-                            && info.logical_size.is_some()
-                            && info.logical_position.is_some() =>
-                    {
-                        if let Some(state) = self.outputs.iter_mut().find(|o| o.output == wl_output)
-                        {
-                            state.name = info.name.unwrap();
-                            state.logical_size = info
-                                .logical_size
-                                .map(|(w, h)| (w as u32, h as u32))
-                                .unwrap();
-                            state.logical_pos = info.logical_position.unwrap();
-                        } else {
-                            tracing::warn!("Updated output {:?} not found", wl_output);
-                            self.outputs.push(OutputState {
-                                output: wl_output,
-                                id: window::Id::unique(),
-                                name: info.name.unwrap(),
-                                logical_size: info
-                                    .logical_size
-                                    .map(|(w, h)| (w as u32, h as u32))
-                                    .unwrap(),
-                                logical_pos: info.logical_position.unwrap(),
-                                has_pointer: false,
-                                bg_source: None,
-                            });
-                        }
-                    }
-                    e => {
-                        tracing::warn!("Unhandled output event: {:?} {e:?}", wl_output);
-                    }
-                };
-
-                if self.prev_rectangle.is_none() {
-                    let mut rect = screenshot::Rect::default();
-                    for output in &self.outputs {
-                        rect.left = rect.left.min(output.logical_pos.0);
-                        rect.top = rect.top.min(output.logical_pos.1);
-                        rect.right = rect
-                            .right
-                            .max(output.logical_pos.0 + output.logical_size.0 as i32);
-                        rect.bottom = rect
-                            .bottom
-                            .max(output.logical_pos.1 + output.logical_size.1 as i32);
-                    }
-                    self.prev_rectangle = Some(rect);
-                }
-
-                cosmic::iced::Task::none()
-            }
-            Msg::ConfigSetScreenshot(screenshot) => {
-                match &mut self.config_handler {
-                    Some(handler) => {
-                        if let Err(e) = self.config.set_screenshot(handler, screenshot) {
-                            tracing::error!("Failed to save screenshot config: {e}")
-                        }
-                    }
-                    None => tracing::error!("Failed to save config: No config handler"),
-                }
-
-                cosmic::iced::Task::none()
-            }
-            Msg::ConfigSubUpdate(config) => {
-                self.config = config;
                 cosmic::iced::Task::none()
             }
             Msg::LayerClosed(id) if id == self.dummy_id => {
