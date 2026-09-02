@@ -33,6 +33,10 @@ use crate::widget::keyboard_wrapper::KeyboardWrapper;
 use crate::widget::rectangle_selection::DragState;
 use crate::{PortalResponse, fl, subscription};
 
+/// The program that owns screenshots on this desktop, and its object.
+const SHOT_NAME: &str = "fun.wmde.Screenshot";
+const SHOT_PATH: &str = "/fun/wmde/Screenshot";
+
 #[derive(Clone, Debug)]
 pub struct ScreenshotImage {
     pub rgba: RgbaImage,
@@ -436,6 +440,11 @@ struct Output {
 
 #[zbus::interface(name = "org.freedesktop.impl.portal.Screenshot")]
 impl Screenshot {
+    /// Forwarded to `fun.wmde.Screenshot` - the program that owns screenshots on this
+    /// desktop. The interface stays here because the shared `xdg-desktop-portal` talks to
+    /// the backend, not to us directly, so every application asking for a screenshot
+    /// arrives at this method; what it must not do is put up a second, different
+    /// screenshot interface beside the one bound to Print.
     async fn screenshot(
         &self,
         #[zbus(connection)] connection: &zbus::Connection,
@@ -444,125 +453,38 @@ impl Screenshot {
         parent_window: &str,
         options: ScreenshotOptions,
     ) -> PortalResponse<ScreenshotResult> {
-        // connection.object_server().at(&handle, Request);
+        let interactive = options.interactive.unwrap_or_default();
 
-        // The screenshot handler is created when the portal is launched, but requests are
-        // handled on demand. The handler does not store extra state such as a reference to the
-        // portal. Storing a copy of the config is unideal because it would remain out of date.
-        //
-        // The most straightforward solution is to load the screenshot config here
-        let config = config::Config::load().0.screenshot;
-
-        // TODO create handle, show dialog
-        let mut outputs = Vec::new();
-        for output in self.wayland_helper.outputs() {
-            let Some(info) = self.wayland_helper.output_info(&output) else {
-                tracing::warn!("Output {:?} has no info", output);
-                continue;
-            };
-            let Some(name) = info.name.clone() else {
-                tracing::warn!("Output {:?} has no name", output);
-                continue;
-            };
-            let Some(logical_position) = info.logical_position else {
-                tracing::warn!("Output {:?} has no position", output);
-                continue;
-            };
-            let Some(logical_size) = info.logical_size else {
-                tracing::warn!("Output {:?} has no size", output);
-                continue;
-            };
-            outputs.push(Output {
-                output,
-                logical_position,
-                logical_size,
-                name,
-            });
-        }
-        if outputs.is_empty() {
-            tracing::error!("No output");
-            return PortalResponse::Other;
-        };
-
-        // if interactive, send image to be used by screenshot editor & await response via channel
-        if options.interactive.unwrap_or_default() {
-            let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-            let first_output = &*outputs[0].name;
-            let output_images = self
-                .interactive_output_images(&outputs, app_id)
-                .await
-                .unwrap_or_default();
-            let toplevel_images = self
-                .interactive_toplevel_images(&outputs)
-                .await
-                .unwrap_or_default();
-            // TODO: Maybe replace config's Choice with Choice from this file
-            let choice = match config.choice {
-                config::screenshot::Choice::Output(Some(output))
-                    if outputs.iter().any(|Output { name, .. }| output == *name) =>
-                {
-                    Choice::Output(output)
-                }
-                config::screenshot::Choice::Output(_) => Choice::Output(first_output.into()),
-                config::screenshot::Choice::Rectangle => {
-                    // Use saved rectangle from config if available
-                    let rect = config
-                        .last_rectangle
-                        .map(|r| Rect {
-                            left: r.left,
-                            top: r.top,
-                            right: r.right,
-                            bottom: r.bottom,
-                        })
-                        .unwrap_or_default();
-                    Choice::Rectangle(rect, DragState::default())
-                }
-                config::screenshot::Choice::Window => Choice::Window(first_output.into(), None),
-            };
-            if let Err(err) = self
-                .tx
-                .send(subscription::Event::Screenshot(Args {
-                    handle: handle.to_owned(),
-                    app_id: app_id.to_string(),
-                    parent_window: parent_window.to_string(),
-                    action: if options.choose_destination.unwrap_or_default() {
-                        Action::SaveToClipboard
-                    } else {
-                        Action::ReturnPath
-                    },
-                    options,
-                    output_images,
-                    toplevel_images,
-                    tx,
-                    location: config.save_location,
-                    // TODO cover all outputs at start of rectangle?
-                    choice,
-                    // will be updated
-                }))
-                .await
-            {
-                tracing::error!("Failed to send screenshot event, {}", err);
-                return PortalResponse::Other;
-            }
-            if let Some(res) = rx.recv().await {
-                return res;
-            } else {
-                return PortalResponse::Cancelled::<ScreenshotResult>;
-            }
-        }
-
-        let doc_path = match self.screenshot_inner(&outputs, app_id).await {
-            Ok(res) => res,
+        let proxy = match zbus::Proxy::new(
+            connection,
+            SHOT_NAME,
+            SHOT_PATH,
+            SHOT_NAME,
+        )
+        .await
+        {
+            Ok(proxy) => proxy,
             Err(err) => {
-                tracing::error!("Failed to capture screenshot: {}", err);
+                tracing::error!("cannot reach {SHOT_NAME}: {err}");
                 return PortalResponse::Other;
             }
         };
 
-        // connection.object_server().remove::<Request, _>(&handle);
-        PortalResponse::Success(ScreenshotResult {
-            uri: format!("file:///{}", doc_path.display()),
-        })
+        // The call blocks for as long as the person takes to frame the shot, which is the
+        // point: the caller is waiting for an image, and D-Bus is holding the request open
+        // for exactly that reason.
+        match proxy.call::<_, _, String>("Shot", &(interactive,)).await {
+            Ok(uri) => PortalResponse::Success(ScreenshotResult { uri }),
+            Err(err) => {
+                // The one refusal that is not a fault: the person closed the overlay.
+                if err.to_string().contains("cancelled") {
+                    PortalResponse::Cancelled
+                } else {
+                    tracing::error!("{SHOT_NAME} took no screenshot: {err}");
+                    PortalResponse::Other
+                }
+            }
+        }
     }
 
     async fn pick_color(
