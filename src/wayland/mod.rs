@@ -170,7 +170,7 @@ struct AppData {
 // `Restart=`, so exiting would take the portal down for the whole session instead of
 // degrading. `EventLoopGuard` + `event_loop_alive` above already mark the loop dead so
 // capture entry points fail fast while Settings/Access keep working.
-// Still applies as of the COSMIC 1.5 merge: upstream 1.5 leaves that `Drop` impl
+// Still applies as of the COSMIC 1.8 merge: upstream 1.8 leaves that `Drop` impl
 // unchanged, so our removal of it stands.
 
 impl AppData {
