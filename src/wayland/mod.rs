@@ -418,9 +418,25 @@ impl WaylandHelper {
             // `event_queue` on the way out also cancels any in-flight frame senders.
             let _guard = EventLoopGuard(data.wayland_helper.clone());
             loop {
-                if let Err(err) = event_queue.blocking_dispatch(&mut data) {
-                    tracing::error!("wayland event dispatch failed, stopping event loop: {}", err);
-                    break;
+                match event_queue.blocking_dispatch(&mut data) {
+                    Ok(_) => {}
+                    // One unparseable event. The offending message has already been
+                    // popped off the queue and the connection itself is still usable,
+                    // so log it and keep dispatching rather than losing every later
+                    // capture to a single bad message.
+                    Err(err @ DispatchError::BadMessage { .. }) => {
+                        tracing::error!("wayland event dispatch: skipping bad message: {}", err);
+                    }
+                    // Protocol or I/O error - the connection is unusable. Stop the loop
+                    // WITHOUT panicking: `EventLoopGuard` clears `event_loop_alive` on
+                    // the way out, so capture entry points fail fast while Settings and
+                    // Access keep working. Upstream panics here and leans on systemd
+                    // restarting the service; our user unit has no `Restart=`, so a
+                    // panic would take the portal down for the whole session.
+                    Err(err) => {
+                        tracing::error!("wayland event dispatch failed, stopping event loop: {}", err);
+                        break;
+                    }
                 }
             }
         });
