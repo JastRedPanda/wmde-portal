@@ -17,8 +17,8 @@ cosmic-files = { package = "wmde-files", path = "../wmde-files", default-feature
     "gvfs",
     "wayland",
 ] }
-cosmic-protocols = { git = "https://github.com/pop-os/cosmic-protocols", rev = "32283d7" }
-cosmic-client-toolkit = { git = "https://github.com/pop-os/cosmic-protocols", rev = "32283d7" }
+cosmic-protocols = { git = "https://github.com/pop-os/cosmic-protocols", rev = "c0cff4d" }
+cosmic-client-toolkit = { git = "https://github.com/pop-os/cosmic-protocols", rev = "c0cff4d" }
 futures = "0.3"
 async-io = "2" # runtime-agnostic Timer for capture timeouts (works under tokio and block_on)
 image = "0.25"
