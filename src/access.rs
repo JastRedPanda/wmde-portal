@@ -1,5 +1,7 @@
 #![allow(dead_code, unused_variables)]
 
+use cosmic::Apply;
+use cosmic::app::{Chrome, frame_class};
 use cosmic::iced::keyboard::Key;
 use cosmic::iced::keyboard::key::Named;
 use cosmic::iced::platform_specific::shell::commands::layer_surface::destroy_layer_surface;
@@ -7,7 +9,7 @@ use cosmic::iced::runtime::platform_specific::wayland::layer_surface::{
     IcedOutput, SctkLayerSurfaceSettings,
 };
 use cosmic::iced::widget::{column, row};
-use cosmic::iced::{Alignment, window};
+use cosmic::iced::{Alignment, Length, window};
 use cosmic::widget::autosize::autosize;
 use cosmic::widget::{self, Column, Id, button, dropdown, icon, text};
 use std::collections::HashMap;
@@ -18,6 +20,9 @@ use crate::app::CosmicPortal;
 use crate::wayland::WaylandHelper;
 use crate::widget::keyboard_wrapper::KeyboardWrapper;
 use crate::{PortalResponse, fl, subscription};
+
+/// Width `widget::dialog` gives its card when none is set.
+const DIALOG_WIDTH: f32 = 570.0;
 
 //(ID returned with the response, choices (ID, label), label, initial selection or "" meaning the portal should choose)
 type AccessDialogChoice = (String, String, Vec<(String, String)>, String);
@@ -114,6 +119,8 @@ pub enum Msg {
     Allow,
     Cancel,
     Choice(usize, usize),
+    /// Moves the modal window by its title bar.
+    Drag,
 }
 
 #[derive(Clone, Debug)]
@@ -135,8 +142,16 @@ impl AccessDialogArgs {
     pub(crate) fn get_surface(&mut self) -> cosmic::Task<cosmic::Action<crate::app::Msg>> {
         if self.options.modal.unwrap_or_default() {
             // create a modal surface
+            // WMDE: client side decorations with the dialog title bar. Left to the
+            // compositor, the window would get the normal title bar, since nothing about it
+            // reads as a dialog there: it has no fixed size and iced sets no xdg parent.
             let (id, task) = window::open(window::Settings {
                 resizable: false,
+                // Paired with `resizable`: the client side drag-resize handler reads only
+                // this border, never `resizable`.
+                resize_border: 0,
+                decorations: false,
+                transparent: true,
                 ..Default::default()
             });
             self.access_id = id;
@@ -229,9 +244,16 @@ pub(crate) fn view(portal: &CosmicPortal) -> cosmic::Element<'_, Msg> {
     .on_press(Msg::Allow)
     .class(cosmic::theme::Button::Suggested);
 
+    let modal = args.options.modal.unwrap_or_default();
+
+    // WMDE: a modal window names itself in its title bar, so the card does not repeat it.
+    let mut dialog = widget::dialog();
+    if !modal {
+        dialog = dialog.title(&args.title);
+    }
+
     let content = KeyboardWrapper::new(
-        widget::dialog()
-            .title(&args.title)
+        dialog
             .body(&args.subtitle)
             .control(control)
             .icon(icon)
@@ -243,6 +265,26 @@ pub(crate) fn view(portal: &CosmicPortal) -> cosmic::Element<'_, Msg> {
             _ => None,
         },
     );
+
+    let content: cosmic::Element<'_, Msg> = if modal {
+        // The window sizes itself to its content, so it cannot take a preset's fixed-size
+        // frame. The title bar is pinned to the card's width: left to fill, it would take
+        // the whole of autosize's unbounded limits.
+        column![
+            widget::container(
+                Chrome::dialog(args.title.as_str(), Msg::Cancel, Msg::Drag)
+                    .header(&portal.core, args.access_id)
+            )
+            .width(Length::Fixed(DIALOG_WIDTH)),
+            content,
+        ]
+        .apply(widget::container)
+        .padding(1)
+        .class(frame_class())
+        .into()
+    } else {
+        content.into()
+    };
 
     autosize(content, Id::new(args.app_id.clone()))
         .min_width(1.)
@@ -282,6 +324,10 @@ pub fn update_msg(
                 args.destroy_surface().discard(),
             ])
         }
+        Msg::Drag => match portal.access_args.as_ref() {
+            Some(args) => portal.core.drag(Some(args.access_id)),
+            None => cosmic::iced::Task::none(),
+        },
         Msg::Choice(i, j) => {
             let args = portal.access_args.as_mut().unwrap();
             if let Some(choice) = args.options.choices.as_ref().and_then(|x| x.get(i))
