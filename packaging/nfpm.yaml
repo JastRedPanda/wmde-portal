@@ -1,0 +1,88 @@
+# Один конфиг nFPM на оба формата. Стейджинг готовит `just package-staging`,
+# версию всегда подставляет just через env WMDE_VERSION (см. justfile).
+# ВАЖНО: только ${WMDE_VERSION} без :-дефолта — nFPM раскрывает env через
+# os.ExpandEnv и :- не понимает (версия молча станет 0.0.0~rc0).
+name: wmde-portal
+arch: amd64
+version: ${WMDE_VERSION}
+release: 1
+maintainer: WMDE <wmde@wmde.fun>
+description: |-
+  WMDE desktop portal backend (COSMIC fork)
+  Settings backend on the fun.wmde config; coexists with the stock portal.
+homepage: https://wmde.fun
+license: GPL-3.0-or-later
+section: x11
+
+# Как в PKGBUILD: libcosmic-рантайм + pipewire (ScreenCast) + сам xdg-desktop-portal.
+depends:
+  - libc6 | glibc
+  - libgcc-s1 | libgcc
+  - libxkbcommon0
+  - libwayland-client0
+  - libglib2.0-0t64
+  - libpipewire-0.3-0t64
+  - xdg-desktop-portal
+
+contents:
+  - src: target/staging/usr/libexec/xdg-desktop-portal-wmde
+    dst: /usr/libexec/xdg-desktop-portal-wmde
+    file_info: { mode: 0755 }
+  - src: target/staging/usr/share/xdg-desktop-portal/portals/wmde.portal
+    dst: /usr/share/xdg-desktop-portal/portals/wmde.portal
+    file_info: { mode: 0644 }
+  - src: target/staging/usr/share/xdg-desktop-portal/wmde-portals.conf
+    dst: /usr/share/xdg-desktop-portal/wmde-portals.conf
+    file_info: { mode: 0644 }
+  - src: target/staging/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.wmde.service
+    dst: /usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.wmde.service
+    file_info: { mode: 0644 }
+  - src: target/staging/usr/lib/systemd/user/org.freedesktop.impl.portal.desktop.wmde.service
+    dst: /usr/lib/systemd/user/org.freedesktop.impl.portal.desktop.wmde.service
+    file_info: { mode: 0644 }
+  # doc (copyright + changelog.Debian.gz) готовит just package-doc.
+  # Только для deb: в rpm нет %doc-разметки у nFPM,
+  # а лицензия и changelog там и так есть (License-тег + %changelog).
+  - src: target/staging/usr/share/doc/wmde-portal/
+    dst: /usr/share/doc/wmde-portal/
+    type: tree
+    packager: deb
+
+# %changelog для rpm генерит just package-staging (иначе E: no-changelogname-tag).
+# Путь от корня репо: nFPM резолвит его от cwd, а не от каталога конфига.
+changelog: target/changelog.yaml
+
+overrides:
+  deb:
+    depends:
+      - libc6
+      - libgcc-s1
+      - libxkbcommon0
+      - libwayland-client0
+      - libgl1
+      - libegl1
+      - libgbm1
+      - libglib2.0-0t64
+      - libfontconfig1
+      - libfreetype6
+      - libexpat1
+      - libpipewire-0.3-0t64
+      - xdg-desktop-portal
+  rpm:
+    # SONAME вместо имён пакетов: имена расходятся между
+    # Fedora и openSUSE, а SONAME предоставляют обе семьи.
+    depends:
+      - libc.so.6()(64bit)
+      - libgcc_s.so.1()(64bit)
+      - libxkbcommon.so.0()(64bit)
+      - libwayland-client.so.0()(64bit)
+      - libGL.so.1()(64bit)
+      - libEGL.so.1()(64bit)
+      - libgbm.so.1()(64bit)
+      - libglib-2.0.so.0()(64bit)
+      - libgobject-2.0.so.0()(64bit)
+      - libfontconfig.so.1()(64bit)
+      - libfreetype.so.6()(64bit)
+      - libexpat.so.1()(64bit)
+      - libpipewire-0.3.so.0()(64bit)
+      - xdg-desktop-portal
